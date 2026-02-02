@@ -75,6 +75,7 @@ async def on_message(message):
             # If it's NOT a verify command, delete it immediately
             if not message.content.startswith("!verify"):
                 await message.delete()
+                await message.channel.send(f"{message.author.mention}, please verify using the format: `!verify 20XX-XX-XXXXX`", delete_after=5)
                 return
 
     # Process commands (like !verify)
@@ -145,6 +146,11 @@ async def verify(ctx, school_id: str = None):
     if roles_added:
         await ctx.author.add_roles(*roles_added)
     
+    # Remove 'Unverified' role if the user has it
+    unverified_role = discord.utils.get(ctx.guild.roles, name="Unverified")
+    if unverified_role and unverified_role in ctx.author.roles:
+        await ctx.author.remove_roles(unverified_role)
+
     # 5. Save Claim
     if clean_id not in claimed_ids:
         claimed_ids[clean_id] = user_id
