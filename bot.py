@@ -1053,32 +1053,71 @@ async def gameroles(ctx, role1: str = None, role2: str = None):
 
 @bot.command()
 async def help(ctx):
-    """Shows all available commands."""
-    embed = discord.Embed(title="📜 Server Commands", color=discord.Color.blue())
+    """Shows a detailed guide of all available commands."""
+    embed = discord.Embed(
+        title="📘 Server Command Guide",
+        description="Below is the detailed list of commands available. Please note the limits and requirements.",
+        color=discord.Color.blue()
+    )
     
-    embed.add_field(name="🔹 General", value=(
-        "`!verify <Student Number>` - Verify your identity (Use in #verify).\n"
-        "`!createteam <game> <name>` - Create a new team.\n"
-        "`!join <Team Name>` - Join a team you were invited to.\n"
-        "`!leave` - Leave your current team.\n"
-        "`!teamstats` - View tournament statistics.\n"
-        "`!gameroles` - List available roles.\n"
-        "`!gameroles <role1> [role2]` - Add/Remove up to 2 roles."
+    # General Commands
+    embed.add_field(name="🔹 General Commands (Everyone)", value=(
+        "**`!verify <Student Number>`**\n"
+        "Links your Student ID to your Discord account.\n"
+        "> **Limit:** Exclusive to `#verify` channel.\n"
+        "> **Format:** `!verify 20XX-X-XXXXX`\n\n"
+        
+        "**`!gameroles [role1] [role2]`**\n"
+        "Manage your in-game roles (e.g., Duelist, Roam).\n"
+        "> **Limit:** Max **2 roles** per game (Primary & Secondary).\n"
+        "> **Usage:** `!gameroles` (View list) or `!gameroles Duelist Sentinel`\n\n"
+        
+        "**`!teamstats`**\n"
+        "View current tournament statistics (Total teams, players, free agents)."
     ), inline=False)
 
-    embed.add_field(name="👑 Captains Only", value=(
-        "`!invite @User` - Invite a player to your team.\n"
-        "`!kick @User` - Remove a player from your team.\n"
-        "`!disband` - Delete your team permanently."
+    # Team Management
+    embed.add_field(name="🏆 Team Creation & Joining", value=(
+        "**`!createteam <game> <name>`**\n"
+        "Creates a new team with private text/voice channels.\n"
+        "> **Limit:** You can only create/join **1 team** at a time.\n"
+        "> **Requirement:** Must be Verified.\n"
+        "> **Supported Games:** Valorant, MLBB, CODM.\n"
+        "> **Example:** `!createteam valorant \"Team Eagles\"`\n\n"
+        
+        "**`!join <Team Name>`**\n"
+        "Joins a team you have been invited to.\n"
+        "> **Requirement:** Must have an active invite from the Captain.\n"
+        "> **Example:** `!join \"Team Eagles\"`\n\n"
+        
+        "**`!leave`**\n"
+        "Leaves your current team and returns you to Free Agent status.\n"
+        "> **Restriction:** Captains cannot leave (must disband)."
     ), inline=False)
 
-    embed.add_field(name="🛡️ Moderators Only", value=(
+    # Captain Commands
+    embed.add_field(name="👑 Captain Commands", value=(
+        "**`!invite @User`**\n"
+        "Sends an official invite to a player via DM.\n"
+        "> **Limit:** Invitee must be Verified and not in a team.\n\n"
+        
+        "**`!kick @User`**\n"
+        "Removes a player from the team and revokes channel access.\n\n"
+        
+        "**`!disband`**\n"
+        "**⚠️ Destructive:** Permanently deletes the team, role, and channels."
+    ), inline=False)
+
+    # Moderator Commands
+    embed.add_field(name="🛡️ Moderator Tools", value=(
         "`!syncsolo` - Fix 'Solo' roles for all users.\n"
         "`!backup` - Download database files.\n"
         "`!restore` - Upload database files to restore.\n"
         "`!scanteams` - Rebuild database from server channels.\n"
         "`!scanclaims` - Rebuild claimed IDs from nicknames."
     ), inline=False)
+
+    embed.set_footer(text="Tip: Arguments with spaces must be wrapped in quotes (e.g. \"Team Name\").")
 
     await ctx.send(embed=embed)
 
