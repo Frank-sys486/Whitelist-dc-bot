@@ -60,6 +60,15 @@ async def on_member_join(member):
     if channel:
         await channel.send(f"Welcome {member.mention}! Please verify yourself by typing `!verify 20XX-XX-XXXXX`.")
 
+    # Automatically assign 'Unverified' role
+    unverified_role = discord.utils.get(member.guild.roles, name="Unverified")
+    if unverified_role:
+        try:
+            await member.add_roles(unverified_role)
+            print(f"Assigned 'Unverified' role to {member.name}")
+        except discord.Forbidden:
+            print(f"Could not assign 'Unverified' role to {member.name} due to permission error.")
+
 @bot.event
 async def on_message(message):
     # Ignore bot's own messages
