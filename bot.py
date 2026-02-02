@@ -53,13 +53,19 @@ def save_teams(teams):
     with open(TEAMS_FILE, "w") as f:
         json.dump(teams, f, indent=4, default=str)
 
+# Configuration for In-Game Roles
+GAME_ROLES_CONFIG = {
+    "MLBB": ["Roam", "Jungler", "Gold", "Mage", "Exp"],
+    "Valorant": ["Duelist", "Controller", "Sentinel", "Initiator"]
+}
+
 claimed_ids = load_claimed_ids()
 
 # Bot setup
 intents = discord.Intents.default()
 intents.members = True  # Needed to manage roles
 intents.message_content = True # Needed to read commands like !verify
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 @bot.event
 async def on_ready():
@@ -714,6 +720,98 @@ async def syncsolo(ctx):
                 removed_count += 1
 
     await status_msg.edit(content=f"✅ **Sync Complete!**\nAdded @Solo to: {added_count}\nRemoved @Solo from: {removed_count}")
+
+@bot.command()
+async def gameroles(ctx, *, role_name: str = None):
+    """Lists roles or assigns them (Max 2 per game). Usage: !gameroles [role_name]"""
+    
+    # 1. If no argument, List Roles
+    if not role_name:
+        embed = discord.Embed(title="🎮 Available In-Game Roles", description="Type `!gameroles <name>` to add/remove a role.\nYou can have up to **2 roles** per game (Primary & Secondary).", color=discord.Color.purple())
+        for game, roles in GAME_ROLES_CONFIG.items():
+            role_list = ", ".join([f"`{r}`" for r in roles])
+            embed.add_field(name=game, value=role_list, inline=False)
+        await ctx.send(embed=embed)
+        return
+
+    # 2. Find which game this role belongs to
+    target_game = None
+    target_role_proper = None
+    
+    for game, roles in GAME_ROLES_CONFIG.items():
+        for r in roles:
+            if r.lower() == role_name.lower():
+                target_game = game
+                target_role_proper = r
+                break
+        if target_game:
+            break
+    
+    if not target_game:
+        await ctx.send(f"❌ Role **{role_name}** not found. Type `!gameroles` to see the list.", delete_after=5)
+        return
+
+    # 3. Ensure the role exists in the server
+    guild = ctx.guild
+    role_obj = discord.utils.get(guild.roles, name=target_role_proper)
+    
+    if not role_obj:
+        try:
+            role_obj = await guild.create_role(name=target_role_proper, mentionable=True)
+            await ctx.send(f"⚙️ Created new role: **{target_role_proper}**")
+        except discord.Forbidden:
+            await ctx.send("Error: I don't have permission to create roles.", delete_after=5)
+            return
+
+    # 4. Check existing roles for THIS game
+    game_roles_list = GAME_ROLES_CONFIG[target_game]
+    current_game_roles = []
+    
+    for r in ctx.author.roles:
+        if r.name in game_roles_list:
+            current_game_roles.append(r)
+
+    # 5. Toggle Logic
+    if role_obj in ctx.author.roles:
+        # User has it -> Remove it
+        await ctx.author.remove_roles(role_obj)
+        await ctx.send(f"➖ Removed **{target_role_proper}** from your roles.", delete_after=5)
+    else:
+        # User doesn't have it -> Check limit
+        if len(current_game_roles) >= 2:
+            await ctx.send(f"⚠️ You already have 2 roles for **{target_game}** ({', '.join([r.name for r in current_game_roles])}).\nRemove one first by typing `!gameroles <name>`.", delete_after=10)
+        else:
+            await ctx.author.add_roles(role_obj)
+            # Determine if Primary or Secondary based on count
+            position = "Primary" if len(current_game_roles) == 0 else "Secondary"
+            await ctx.send(f"✅ Added **{target_role_proper}** as your **{position}** role!", delete_after=5)
+
+@bot.command()
+async def help(ctx):
+    """Shows all available commands."""
+    embed = discord.Embed(title="📜 Server Commands", color=discord.Color.blue())
+    
+    embed.add_field(name="🔹 General", value=(
+        "`!verify <Student Number>` - Verify your identity (Use in #verify).\n"
+        "`!createteam <game> <name>` - Create a new team.\n"
+        "`!join <Team Name>` - Join a team you were invited to.\n"
+        "`!leave` - Leave your current team.\n"
+        "`!teamstats` - View tournament statistics.\n"
+        "`!gameroles` - List available roles.\n"
+        "`!gameroles <role>` - Add/Remove a role (Max 2)."
+    ), inline=False)
+
+    embed.add_field(name="👑 Captains Only", value=(
+        "`!invite @User` - Invite a player to your team.\n"
+        "`!kick @User` - Remove a player from your team.\n"
+        "`!disband` - Delete your team permanently."
+    ), inline=False)
+
+    embed.add_field(name="🛡️ Moderators Only", value=(
+        "`!syncsolo` - Fix 'Solo' roles for all users."
+    ), inline=False)
+
+    await ctx.send(embed=embed)
 
 # Run bot using token stored in environment variable
 token = os.getenv("DISCORD_TOKEN")
