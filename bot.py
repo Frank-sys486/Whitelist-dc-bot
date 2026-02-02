@@ -118,10 +118,22 @@ async def verify(ctx, school_id: str = None):
     # Change Nickname (First word of Full Name)
     # Example: "Ungco Josh Aiken O." -> "Ungco"
     new_nickname = student_info['name'].split()[0]
-    try:
-        await ctx.author.edit(nick=new_nickname)
-    except discord.Forbidden:
-        await ctx.send("I couldn't change your nickname (permission error).", delete_after=5)
+    
+    print(f"Attempting to change nickname for {ctx.author} to '{new_nickname}'...")
+
+    if ctx.author.id == ctx.guild.owner_id:
+        print("Error: Cannot change nickname because the user is the Server Owner.")
+        await ctx.send("I cannot change the server owner's nickname.", delete_after=5)
+    else:
+        try:
+            await ctx.author.edit(nick=new_nickname)
+            print("Nickname changed successfully.")
+        except discord.Forbidden as e:
+            print(f"Error: Failed to change nickname. Permission denied. Details: {e}")
+            print(f"Debug: Bot Top Role Position: {ctx.guild.me.top_role.position}, User Top Role Position: {ctx.author.top_role.position}")
+            await ctx.send("I couldn't change your nickname. My role might be below yours in the server settings.", delete_after=5)
+        except Exception as e:
+            print(f"Error: An unexpected error occurred: {e}")
 
     # 4. Assign Roles based on Sports
     roles_added = []
