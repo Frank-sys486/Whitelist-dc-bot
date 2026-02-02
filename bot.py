@@ -9,7 +9,7 @@ STUDENT_FILE = "identification.csv"
 student_db = {}
 
 if os.path.exists(STUDENT_FILE):
-    with open(STUDENT_FILE, mode='r', encoding='utf-8') as f:
+    with open(STUDENT_FILE, mode='r', encoding='cp1252') as f:
         reader = csv.DictReader(f)
         for row in reader:
             # Get Student Number and strip whitespace
