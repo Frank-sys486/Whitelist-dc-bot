@@ -767,6 +767,108 @@ async def restore(ctx):
         await ctx.send("❌ **Error:** Unknown file. Please upload `teams.json` or `claimed_ids.json`.", delete_after=5)
 
 @bot.command()
+async def scanteams(ctx):
+    """(Moderator Only) Reconstructs teams.json by scanning existing channels and roles."""
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    status_msg = await ctx.send("🕵️ **Starting Team Scan...** This may take a while.")
+    
+    guild = ctx.guild
+    teams = {} # Start fresh reconstruction
+    
+    # Categories to scan
+    TARGET_CATEGORIES = ["valorant-team", "mlbb-team", "codm-team"]
+    
+    # Map category name to Game Name
+    GAME_MAP = {
+        "valorant-team": "valorant",
+        "mlbb-team": "mlbb",
+        "codm-team": "codm"
+    }
+
+    log_channel = discord.utils.get(guild.text_channels, name="mod-logs")
+    restored_count = 0
+
+    for cat_name in TARGET_CATEGORIES:
+        # Find the category object (case-insensitive)
+        category = discord.utils.find(lambda c: c.name.lower() == cat_name, guild.categories)
+        if not category:
+            continue
+
+        game_name = GAME_MAP.get(cat_name, "unknown")
+
+        # Scan text channels in this category
+        for channel in category.text_channels:
+            # Skip admin channels
+            if channel.name == "mod-team":
+                continue
+
+            # 1. Find the Role matching the channel name
+            # Logic: Channel "team-alpha" matches Role "Team Alpha"
+            found_role = None
+            for role in guild.roles:
+                if role.name.replace(" ", "-").lower() == channel.name:
+                    found_role = role
+                    break
+            
+            if not found_role:
+                continue
+
+            # 2. Find Members
+            member_ids = [str(m.id) for m in found_role.members]
+
+            # 3. Find Captain (First message mention)
+            captain_id = None
+            try:
+                # Get the very first message in channel history
+                async for msg in channel.history(limit=1, oldest_first=True):
+                    if msg.mentions:
+                        captain_id = str(msg.mentions[0].id)
+                        break
+            except:
+                pass
+
+            # Fallback: First member if history is empty/cleared
+            if not captain_id and member_ids:
+                captain_id = member_ids[0]
+            
+            if not captain_id:
+                continue
+
+            # 4. Find Voice Channel (Look for VC with same name as Role)
+            voice_channel_id = None
+            vc = discord.utils.find(lambda c: c.name == found_role.name and isinstance(c, discord.VoiceChannel), category.voice_channels)
+            if vc:
+                voice_channel_id = vc.id
+
+            # 5. Build Data
+            team_name = found_role.name
+            teams[team_name] = {
+                "game": game_name,
+                "captain_id": captain_id,
+                "members": member_ids,
+                "text_channel_id": channel.id,
+                "voice_channel_id": voice_channel_id,
+                "role_id": found_role.id,
+                "invites": [],
+                "created_at": datetime.datetime.now().isoformat()
+            }
+            
+            restored_count += 1
+            
+            # Log to mod-logs
+            if log_channel:
+                captain_user = guild.get_member(int(captain_id))
+                cap_name = captain_user.display_name if captain_user else "Unknown"
+                await log_channel.send(f"♻️ **System restored.** {captain_user.mention if captain_user else cap_name} is now Captain in team **{team_name}**.")
+
+    save_teams(teams)
+    await update_mod_dashboard(guild)
+    await status_msg.edit(content=f"✅ **Scan Complete!** Restored {restored_count} teams.")
+
+@bot.command()
 async def gameroles(ctx, *, role_name: str = None):
     """Lists roles or assigns them (Max 2 per game). Usage: !gameroles [role_name]"""
     
@@ -889,7 +991,8 @@ async def help(ctx):
     embed.add_field(name="🛡️ Moderators Only", value=(
         "`!syncsolo` - Fix 'Solo' roles for all users.\n"
         "`!backup` - Download database files.\n"
-        "`!restore` - Upload database files to restore."
+        "`!restore` - Upload database files to restore.\n"
+        "`!scanteams` - Rebuild database from server channels."
     ), inline=False)
 
     await ctx.send(embed=embed)
