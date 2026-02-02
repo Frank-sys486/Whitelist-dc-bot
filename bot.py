@@ -72,7 +72,7 @@ async def on_member_join(member):
         channel = discord.utils.get(member.guild.text_channels, name="general")
     
     if channel:
-        await channel.send(f"Welcome {member.mention}! Please verify yourself by typing `!verify 20XX-XX-XXXXX`.", delete_after=60)
+        await channel.send(f"Welcome {member.mention}! Please verify yourself by typing `!verify 20XX-X-XXXXX`.", delete_after=60)
 
     # Automatically assign 'Unverified' role
     unverified_role = discord.utils.get(member.guild.roles, name="Unverified")
@@ -276,6 +276,9 @@ async def createteam(ctx, game: str = None, *, team_name: str = None):
     if not game or not team_name:
         await ctx.send(f"{ctx.author.mention}, usage: `!createteam <game> <team_name>`\nExample: `!createteam valorant Team Eagles`", delete_after=10)
         return
+    
+    # Clean quotes from team name (e.g., "CCS" -> CCS)
+    team_name = team_name.strip('"')
 
     # Map input to Category Names
     CATEGORY_MAP = {
@@ -348,7 +351,7 @@ async def createteam(ctx, game: str = None, *, team_name: str = None):
 
     # 6. Post Captain's Guide
     embed = discord.Embed(title=f"👑 Welcome to {team_name}", description="You are the Captain! Here are your commands:", color=discord.Color.green())
-    embed.add_field(name="!invite @user", value="Invite a player to your team.", inline=False)
+    embed.add_field(name="!invite @user ", value="Invite a player to your team.", inline=False)
     embed.add_field(name="!kick @user", value="Remove a player from your team.", inline=False)
     embed.add_field(name="!disband", value="Delete this team permanently.", inline=False)
     await text_channel.send(content=ctx.author.mention, embed=embed)
@@ -442,6 +445,9 @@ async def join(ctx, *, team_name: str):
     """Accept an invite: !join "Team Name" """
     teams = load_teams()
     
+    # Clean quotes from input so !join "CCS" works for team CCS
+    team_name = team_name.strip('"')
+    
     # 1. Check if Team Exists
     if team_name not in teams:
         await ctx.send(f"Team **{team_name}** does not exist. Check spelling (case-sensitive).", delete_after=5)
@@ -498,6 +504,160 @@ async def join(ctx, *, team_name: str):
     await update_mod_dashboard(ctx.guild)
     
     await ctx.send(f"Successfully joined **{team_name}**!", delete_after=5)
+
+@bot.command()
+async def kick(ctx, member: discord.Member):
+    """Captain removes a player: !kick @User"""
+    # 1. Check if Author is a Captain
+    teams = load_teams()
+    my_team_name = None
+    my_team_data = None
+
+    for t_name, t_data in teams.items():
+        if t_data['captain_id'] == str(ctx.author.id):
+            my_team_name = t_name
+            my_team_data = t_data
+            break
+    
+    if not my_team_name:
+        await ctx.send(f"{ctx.author.mention}, you are not the captain of any team.", delete_after=5)
+        return
+
+    # 2. Validate Target
+    if member.id == ctx.author.id:
+        await ctx.send("You cannot kick yourself. Use `!disband` to delete the team.", delete_after=5)
+        return
+    
+    user_id = str(member.id)
+    if user_id not in my_team_data['members']:
+        await ctx.send(f"{member.display_name} is not in your team.", delete_after=5)
+        return
+
+    # 3. Update Database
+    my_team_data['members'].remove(user_id)
+    save_teams(teams)
+
+    # 4. Remove Discord Role
+    role_id = my_team_data.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(role_id)
+        if role and role in member.roles:
+            await member.remove_roles(role)
+
+    # 5. Remove Channel Permissions (Lock them out)
+    text_channel = ctx.guild.get_channel(my_team_data["text_channel_id"])
+    voice_channel = ctx.guild.get_channel(my_team_data["voice_channel_id"])
+
+    # overwrite=None removes the specific permission override for this user
+    if text_channel:
+        await text_channel.set_permissions(member, overwrite=None)
+    if voice_channel:
+        await voice_channel.set_permissions(member, overwrite=None)
+
+    # 6. Update Solo Status (User is now a Free Agent)
+    await update_solo_role(ctx.guild, member, has_team=False)
+
+    # 7. Update Dashboard
+    await update_mod_dashboard(ctx.guild)
+
+    await ctx.send(f"🚫 **{member.display_name}** has been kicked from **{my_team_name}**.")
+
+@bot.command()
+async def leave(ctx):
+    """Player leaves their current team."""
+    teams = load_teams()
+    user_id = str(ctx.author.id)
+    
+    my_team_name = None
+    my_team_data = None
+    
+    for t_name, t_data in teams.items():
+        if user_id in t_data['members']:
+            my_team_name = t_name
+            my_team_data = t_data
+            break
+            
+    if not my_team_name:
+        await ctx.send("You are not in a team.", delete_after=5)
+        return
+        
+    # Check if Captain
+    if my_team_data['captain_id'] == user_id:
+        await ctx.send("The Captain cannot leave. Use `!disband` to delete the team.", delete_after=10)
+        return
+        
+    # 1. Update Database
+    my_team_data['members'].remove(user_id)
+    save_teams(teams)
+    
+    # 2. Remove Discord Role
+    role_id = my_team_data.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(role_id)
+        if role:
+            await ctx.author.remove_roles(role)
+            
+    # 3. Remove Channel Permissions
+    text_channel = ctx.guild.get_channel(my_team_data['text_channel_id'])
+    voice_channel = ctx.guild.get_channel(my_team_data['voice_channel_id'])
+    
+    if text_channel: await text_channel.set_permissions(ctx.author, overwrite=None)
+    if voice_channel: await voice_channel.set_permissions(ctx.author, overwrite=None)
+    
+    # 4. Update Solo Status
+    await update_solo_role(ctx.guild, ctx.author, has_team=False)
+    
+    # 5. Update Dashboard
+    await update_mod_dashboard(ctx.guild)
+    
+    # Notify
+    if text_channel:
+        await text_channel.send(f"👋 **{ctx.author.display_name}** has left the team.")
+    await ctx.send(f"You have left **{my_team_name}**.", delete_after=5)
+
+@bot.command()
+async def disband(ctx):
+    """Captain deletes the team entirely."""
+    teams = load_teams()
+    
+    # Identify team
+    my_team_name = None
+    my_team_data = None
+    for t_name, t_data in teams.items():
+        if t_data['captain_id'] == str(ctx.author.id):
+            my_team_name = t_name
+            my_team_data = t_data
+            break
+            
+    if not my_team_name:
+        await ctx.send("You are not the captain of any team.", delete_after=5)
+        return
+
+    guild = ctx.guild
+    
+    # 1. Cleanup Members (Remove Roles & Give Solo back)
+    role_id = my_team_data.get("role_id")
+    team_role = guild.get_role(role_id)
+    
+    for member_id in my_team_data['members']:
+        member = guild.get_member(int(member_id))
+        if member:
+            if team_role and team_role in member.roles:
+                await member.remove_roles(team_role)
+            await update_solo_role(guild, member, has_team=False)
+            
+    # 2. Delete Channels & Role
+    tc = guild.get_channel(my_team_data['text_channel_id'])
+    vc = guild.get_channel(my_team_data['voice_channel_id'])
+    
+    if tc: await tc.delete()
+    if vc: await vc.delete()
+    if team_role: await team_role.delete()
+    
+    # 3. Delete from DB & Update Dashboard
+    del teams[my_team_name]
+    save_teams(teams)
+    await update_mod_dashboard(guild)
 
 # Run bot using token stored in environment variable
 token = os.getenv("DISCORD_TOKEN")
