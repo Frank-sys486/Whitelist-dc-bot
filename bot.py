@@ -659,6 +659,62 @@ async def disband(ctx):
     save_teams(teams)
     await update_mod_dashboard(guild)
 
+@bot.command()
+async def syncsolo(ctx):
+    """Assigns 'Solo' role to users without a team (Moderators/Bots excluded)."""
+    # Check for Moderator role
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    status_msg = await ctx.send("🔄 Syncing Solo roles... This might take a moment.")
+    
+    teams = load_teams()
+    # Create a set of all user IDs currently in a team
+    team_member_ids = set()
+    for t_data in teams.values():
+        for member_id in t_data.get('members', []):
+            team_member_ids.add(str(member_id))
+            
+    solo_role = discord.utils.get(ctx.guild.roles, name="Solo")
+    mod_role = discord.utils.get(ctx.guild.roles, name="Moderator")
+    verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
+    
+    if not solo_role:
+        await ctx.send("Error: 'Solo' role not found.", delete_after=5)
+        return
+
+    added_count = 0
+    removed_count = 0
+    
+    for member in ctx.guild.members:
+        # Skip Bots
+        if member.bot:
+            continue
+            
+        # Skip Moderators
+        if mod_role and mod_role in member.roles:
+            continue
+            
+        # Skip Unverified (Safety check: only manage Verified users)
+        if verified_role and verified_role not in member.roles:
+            continue
+
+        user_id = str(member.id)
+
+        if user_id not in team_member_ids:
+            # User has NO team -> Add Solo
+            if solo_role not in member.roles:
+                await member.add_roles(solo_role)
+                added_count += 1
+        else:
+            # User HAS team -> Remove Solo (Cleanup)
+            if solo_role in member.roles:
+                await member.remove_roles(solo_role)
+                removed_count += 1
+
+    await status_msg.edit(content=f"✅ **Sync Complete!**\nAdded @Solo to: {added_count}\nRemoved @Solo from: {removed_count}")
+
 # Run bot using token stored in environment variable
 token = os.getenv("DISCORD_TOKEN")
 if not token:
