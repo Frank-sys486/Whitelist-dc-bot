@@ -3,6 +3,7 @@ from discord.ext import commands
 import json
 import os
 import csv
+import datetime
 
 # Load student data from CSV
 STUDENT_FILE = "response.csv"
@@ -38,6 +39,19 @@ def load_claimed_ids():
 def save_claimed_ids(claimed):
     with open(CLAIMED_FILE, "w") as f:
         json.dump(claimed, f, indent=4)
+
+# File to track Teams
+TEAMS_FILE = "teams.json"
+
+def load_teams():
+    if os.path.exists(TEAMS_FILE):
+        with open(TEAMS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_teams(teams):
+    with open(TEAMS_FILE, "w") as f:
+        json.dump(teams, f, indent=4, default=str)
 
 claimed_ids = load_claimed_ids()
 
@@ -162,6 +176,11 @@ async def verify(ctx, school_id: str = None):
         role = discord.utils.get(ctx.guild.roles, name=sport_name)
         if role:
             roles_added.append(role)
+    
+    # Add 'Solo' role (Free Agent status)
+    solo_role = discord.utils.get(ctx.guild.roles, name="Solo")
+    if solo_role:
+        roles_added.append(solo_role)
 
     # Add the base 'Verified' role
     verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
@@ -182,6 +201,303 @@ async def verify(ctx, school_id: str = None):
         save_claimed_ids(claimed_ids)
 
     await ctx.send(f"{ctx.author.mention}, you have been verified as **{new_nickname}**!", delete_after=10)
+
+# --- TEAM SYSTEM HELPERS ---
+
+async def update_solo_role(guild, member, has_team):
+    """
+    Manages the 'Solo' role based on team status.
+    - If has_team is True: Remove 'Solo' role.
+    - If has_team is False: Add 'Solo' role.
+    Does NOT touch the 'Verified' role.
+    """
+    solo_role = discord.utils.get(guild.roles, name="Solo")
+    if not solo_role:
+        return
+
+    if has_team:
+        if solo_role in member.roles:
+            await member.remove_roles(solo_role)
+    else:
+        if solo_role not in member.roles:
+            await member.add_roles(solo_role)
+
+async def update_mod_dashboard(guild):
+    """Updates the #mod-team channel with a list of all teams."""
+    teams = load_teams()
+    
+    # Find or Create #mod-team channel
+    mod_channel = discord.utils.get(guild.text_channels, name="mod-team")
+    if not mod_channel:
+        # Create channel exclusive to Moderators
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            guild.me: discord.PermissionOverwrite(read_messages=True)
+        }
+        mod_role = discord.utils.get(guild.roles, name="Moderator")
+        if mod_role:
+            overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True)
+        
+        mod_channel = await guild.create_text_channel("mod-team", overwrites=overwrites)
+
+    # Clear previous messages to keep it clean (Dashboard style)
+    try:
+        await mod_channel.purge(limit=10)
+    except:
+        pass # Fail silently if history is too old or perms issue
+
+    # Build the Dashboard Embed
+    embed = discord.Embed(title="🏆 Tournament Teams Dashboard", color=discord.Color.gold())
+    embed.description = f"**Total Teams:** {len(teams)}\nLast Updated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+    # Group teams by Game
+    teams_by_game = {}
+    for team_name, data in teams.items():
+        game = data['game'].upper()
+        if game not in teams_by_game:
+            teams_by_game[game] = []
+        teams_by_game[game].append(team_name)
+    
+    if not teams_by_game:
+        embed.add_field(name="Status", value="No teams created yet.", inline=False)
+    else:
+        for game, team_list in teams_by_game.items():
+            embed.add_field(name=f"{game} ({len(team_list)})", value="\n".join(team_list), inline=False)
+
+    await mod_channel.send(embed=embed)
+
+# --- TEAM COMMANDS ---
+
+@bot.command()
+async def createteam(ctx, game: str = None, *, team_name: str = None):
+    """Creates a team, private channels, and role. Usage: !createteam valorant "Team Name" """
+    
+    # 1. Input Validation
+    if not game or not team_name:
+        await ctx.send(f"{ctx.author.mention}, usage: `!createteam <game> <team_name>`\nExample: `!createteam valorant Team Eagles`", delete_after=10)
+        return
+
+    # Map input to Category Names
+    CATEGORY_MAP = {
+        "valorant": "valorant-team",
+        "mlbb": "mlbb-team",
+        "mobile legends": "mlbb-team",
+        "codm": "codm-team",
+        "call of duty": "codm-team"
+    }
+    
+    category_name = CATEGORY_MAP.get(game.lower())
+    if not category_name:
+        await ctx.send(f"Invalid game. Supported games: Valorant, MLBB, CODM.", delete_after=5)
+        return
+
+    # 2. Check if User is Verified
+    verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
+    if verified_role not in ctx.author.roles:
+        await ctx.send("You must be Verified to create a team.", delete_after=5)
+        return
+
+    # 3. Check Database (Is user already in a team? Is name taken?)
+    teams = load_teams()
+    
+    if team_name in teams:
+        await ctx.send(f"Team name **{team_name}** is already taken.", delete_after=5)
+        return
+
+    user_id = str(ctx.author.id)
+    for t_name, t_data in teams.items():
+        if user_id in t_data['members']:
+            await ctx.send(f"You are already in a team ({t_name}). You cannot create another one.", delete_after=5)
+            return
+
+    # 4. Create Discord Infrastructure
+    guild = ctx.guild
+    
+    # Find Category
+    category = discord.utils.get(guild.categories, name=category_name)
+    if not category:
+        await ctx.send(f"Error: Category `{category_name}` not found. Please contact an admin.", delete_after=10)
+        return
+
+    # Create Role
+    team_role = await guild.create_role(name=team_name, mentionable=True)
+    await ctx.author.add_roles(team_role)
+
+    # Create Channels (Private)
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False, connect=False),
+        team_role: discord.PermissionOverwrite(read_messages=True, connect=True),
+        guild.me: discord.PermissionOverwrite(read_messages=True, connect=True)
+    }
+
+    text_channel = await guild.create_text_channel(team_name.replace(" ", "-").lower(), category=category, overwrites=overwrites)
+    voice_channel = await guild.create_voice_channel(team_name, category=category, overwrites=overwrites)
+
+    # 5. Save to Database
+    teams[team_name] = {
+        "game": game.lower(),
+        "captain_id": user_id,
+        "members": [user_id],
+        "text_channel_id": text_channel.id,
+        "voice_channel_id": voice_channel.id,
+        "role_id": team_role.id,
+        "invites": [],
+        "created_at": datetime.datetime.now().isoformat()
+    }
+    save_teams(teams)
+
+    # 6. Post Captain's Guide
+    embed = discord.Embed(title=f"👑 Welcome to {team_name}", description="You are the Captain! Here are your commands:", color=discord.Color.green())
+    embed.add_field(name="!invite @user", value="Invite a player to your team.", inline=False)
+    embed.add_field(name="!kick @user", value="Remove a player from your team.", inline=False)
+    embed.add_field(name="!disband", value="Delete this team permanently.", inline=False)
+    await text_channel.send(content=ctx.author.mention, embed=embed)
+    await text_channel.pin_message(await text_channel.fetch_message(text_channel.last_message_id))
+
+    # 7. Update 'Solo' Status (User is now in a team)
+    # We keep 'Verified' role, but remove 'Solo' role
+    await update_solo_role(guild, ctx.author, has_team=True)
+
+    # 8. Update Dashboard
+    await update_mod_dashboard(guild)
+    
+    await ctx.send(f"Team **{team_name}** created successfully! Check {text_channel.mention}.", delete_after=10)
+
+@bot.command()
+async def teamstats(ctx):
+    """Shows statistics about teams and players."""
+    teams = load_teams()
+    
+    total_teams = len(teams)
+    
+    # Count players in teams
+    players_in_teams = sum(len(t['members']) for t in teams.values())
+    
+    # Count Solo players
+    solo_role = discord.utils.get(ctx.guild.roles, name="Solo")
+    solo_count = len(solo_role.members) if solo_role else 0
+
+    embed = discord.Embed(title="📊 Tournament Statistics", color=discord.Color.blue())
+    embed.add_field(name="Total Teams", value=str(total_teams), inline=True)
+    embed.add_field(name="Players in Teams", value=str(players_in_teams), inline=True)
+    embed.add_field(name="Free Agents (Solo)", value=str(solo_count), inline=True)
+    
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def invite(ctx, member: discord.Member):
+    """Captain invites a player: !invite @User"""
+    # 1. Check if Author is a Captain
+    teams = load_teams()
+    my_team_name = None
+    my_team_data = None
+
+    for t_name, t_data in teams.items():
+        if t_data['captain_id'] == str(ctx.author.id):
+            my_team_name = t_name
+            my_team_data = t_data
+            break
+    
+    if not my_team_name:
+        await ctx.send(f"{ctx.author.mention}, you are not the captain of any team.", delete_after=5)
+        return
+
+    # 2. Validate the Target Member
+    if member.bot:
+        await ctx.send("You cannot invite bots.", delete_after=5)
+        return
+    
+    verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
+    if verified_role not in member.roles:
+        await ctx.send(f"{member.display_name} is not Verified yet.", delete_after=5)
+        return
+
+    # Check if they are already in a team
+    for t_data in teams.values():
+        if str(member.id) in t_data['members']:
+            await ctx.send(f"{member.display_name} is already in a team.", delete_after=5)
+            return
+
+    # 3. Add to Invites List
+    # Initialize list if it doesn't exist (for older teams)
+    if "invites" not in my_team_data:
+        my_team_data["invites"] = []
+
+    if str(member.id) in my_team_data["invites"]:
+        await ctx.send(f"{member.display_name} is already invited.", delete_after=5)
+        return
+
+    my_team_data["invites"].append(str(member.id))
+    save_teams(teams)
+
+    # 4. Notify the User
+    try:
+        await member.send(f"🎟️ **You have been invited!**\n\nTeam **{my_team_name}** wants you.\nTo accept, go to the server and type:\n`!join \"{my_team_name}\"`")
+        await ctx.send(f"Invite sent to **{member.display_name}**!", delete_after=5)
+    except discord.Forbidden:
+        await ctx.send(f"I couldn't DM {member.display_name}, but they can still join by typing `!join \"{my_team_name}\"`.", delete_after=10)
+
+@bot.command()
+async def join(ctx, *, team_name: str):
+    """Accept an invite: !join "Team Name" """
+    teams = load_teams()
+    
+    # 1. Check if Team Exists
+    if team_name not in teams:
+        await ctx.send(f"Team **{team_name}** does not exist. Check spelling (case-sensitive).", delete_after=5)
+        return
+
+    team_data = teams[team_name]
+    user_id = str(ctx.author.id)
+
+    # 2. Check if User was Invited
+    # (Handle case where 'invites' key might be missing in old data)
+    invites = team_data.get("invites", [])
+    
+    if user_id not in invites:
+        await ctx.send(f"{ctx.author.mention}, you have not been invited to **{team_name}**. Ask the captain to `!invite` you.", delete_after=5)
+        return
+
+    # 3. Double Check: Is user already in a team?
+    for t_name, t_data in teams.items():
+        if user_id in t_data['members']:
+            await ctx.send(f"You are already in **{t_name}**. You must leave it first.", delete_after=5)
+            return
+
+    # 4. Process Joining
+    # Update Database
+    team_data["members"].append(user_id)
+    team_data["invites"].remove(user_id) # Remove from invite list
+    save_teams(teams)
+
+    # Update Discord Role
+    role_id = team_data.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(role_id)
+        if role:
+            await ctx.author.add_roles(role)
+
+    # Update Channel Permissions (Text & Voice)
+    # We need to explicitly let them see the channel
+    text_channel = ctx.guild.get_channel(team_data["text_channel_id"])
+    voice_channel = ctx.guild.get_channel(team_data["voice_channel_id"])
+
+    overwrite = discord.PermissionOverwrite(read_messages=True, connect=True)
+    
+    if text_channel:
+        await text_channel.set_permissions(ctx.author, overwrite=overwrite)
+        await text_channel.send(f"👋 Welcome {ctx.author.mention} to the team!")
+    
+    if voice_channel:
+        await voice_channel.set_permissions(ctx.author, overwrite=overwrite)
+
+    # Update Solo Status
+    await update_solo_role(ctx.guild, ctx.author, has_team=True)
+
+    # Update Dashboard
+    await update_mod_dashboard(ctx.guild)
+    
+    await ctx.send(f"Successfully joined **{team_name}**!", delete_after=5)
 
 # Run bot using token stored in environment variable
 token = os.getenv("DISCORD_TOKEN")
