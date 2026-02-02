@@ -817,7 +817,11 @@ async def scanteams(ctx):
                 continue
 
             # 2. Find Members
-            member_ids = [str(m.id) for m in found_role.members]
+            member_ids = []
+            for m in found_role.members:
+                member_ids.append(str(m.id))
+                # Ensure team members do not have the Solo role
+                await update_solo_role(guild, m, has_team=True)
 
             # 3. Find Captain (First message mention)
             captain_id = None
