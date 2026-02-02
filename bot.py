@@ -55,8 +55,8 @@ def save_teams(teams):
 
 # Configuration for In-Game Roles
 GAME_ROLES_CONFIG = {
-    "MLBB": ["Roam", "Jungler", "Gold", "Mage", "Exp"],
-    "Valorant": ["Duelist", "Controller", "Sentinel", "Initiator"]
+    "MLBB": ["Roam", "Jungler", "Gold", "Mage", "Exp", "Flex"],
+    "Valorant": ["Duelist", "Controller", "Sentinel", "Initiator", "Flex"]
 }
 
 claimed_ids = load_claimed_ids()
@@ -742,34 +742,82 @@ async def backup(ctx):
     await ctx.send("📦 **System Backup**\nHere are the latest database files:", files=files_to_send)
 
 @bot.command()
+async def restore(ctx):
+    """(Moderator Only) Upload a backup file (teams.json or claimed_ids.json) to restore data."""
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    if not ctx.message.attachments:
+        await ctx.send("Please attach the backup file you want to restore.", delete_after=5)
+        return
+
+    attachment = ctx.message.attachments[0]
+    
+    if attachment.filename == "teams.json":
+        await attachment.save(TEAMS_FILE)
+        await update_mod_dashboard(ctx.guild)
+        await ctx.send(f"✅ **Success!** `teams.json` has been restored. Teams are updated.")
+    elif attachment.filename == "claimed_ids.json":
+        await attachment.save(CLAIMED_FILE)
+        global claimed_ids
+        claimed_ids = load_claimed_ids()
+        await ctx.send(f"✅ **Success!** `claimed_ids.json` has been restored. Verified users updated.")
+    else:
+        await ctx.send("❌ **Error:** Unknown file. Please upload `teams.json` or `claimed_ids.json`.", delete_after=5)
+
+@bot.command()
 async def gameroles(ctx, *, role_name: str = None):
     """Lists roles or assigns them (Max 2 per game). Usage: !gameroles [role_name]"""
     
-    # 1. If no argument, List Roles
+    # 1. If no argument, List Roles AND Current Status
     if not role_name:
-        embed = discord.Embed(title="🎮 Available In-Game Roles", description="Type `!gameroles <name>` to add/remove a role.\nYou can have up to **2 roles** per game (Primary & Secondary).", color=discord.Color.purple())
+        embed = discord.Embed(title="🎮 In-Game Roles Manager", description="Type `!gameroles <name>` to add/remove a role.\nYou can have up to **2 roles** per game.", color=discord.Color.purple())
         for game, roles in GAME_ROLES_CONFIG.items():
+            # Get all available roles for this game
             role_list = ", ".join([f"`{r}`" for r in roles])
-            embed.add_field(name=game, value=role_list, inline=False)
+            
+            # Get user's current roles for this game
+            user_roles = []
+            for r in ctx.author.roles:
+                if r.name in roles:
+                    user_roles.append(r.name)
+            
+            # Format user's roles with Primary/Secondary labels
+            status_str = "None"
+            if user_roles:
+                formatted_roles = []
+                for i, r_name in enumerate(user_roles):
+                    label = "Primary" if i == 0 else "Secondary"
+                    formatted_roles.append(f"**{r_name}** ({label})")
+                status_str = ", ".join(formatted_roles)
+
+            embed.add_field(name=f"{game} Roles", value=f"**Available:** {role_list}\n**Your Roles:** {status_str}", inline=False)
+            
         await ctx.send(embed=embed)
         return
 
-    # 2. Find which game this role belongs to
-    target_game = None
+    # 2. Find which game(s) this role belongs to
     target_role_proper = None
+    affected_games = []
     
+    # First pass: find the proper casing of the role name
     for game, roles in GAME_ROLES_CONFIG.items():
         for r in roles:
             if r.lower() == role_name.lower():
-                target_game = game
                 target_role_proper = r
                 break
-        if target_game:
+        if target_role_proper:
             break
     
-    if not target_game:
+    if not target_role_proper:
         await ctx.send(f"❌ Role **{role_name}** not found. Type `!gameroles` to see the list.", delete_after=5)
         return
+
+    # Second pass: Find ALL games this role belongs to (e.g. Flex is in MLBB and Valorant)
+    for game, roles in GAME_ROLES_CONFIG.items():
+        if target_role_proper in roles:
+            affected_games.append(game)
 
     # 3. Ensure the role exists in the server
     guild = ctx.guild
@@ -783,28 +831,39 @@ async def gameroles(ctx, *, role_name: str = None):
             await ctx.send("Error: I don't have permission to create roles.", delete_after=5)
             return
 
-    # 4. Check existing roles for THIS game
-    game_roles_list = GAME_ROLES_CONFIG[target_game]
-    current_game_roles = []
-    
-    for r in ctx.author.roles:
-        if r.name in game_roles_list:
-            current_game_roles.append(r)
-
-    # 5. Toggle Logic
+    # 4. Toggle Logic
     if role_obj in ctx.author.roles:
         # User has it -> Remove it
         await ctx.author.remove_roles(role_obj)
         await ctx.send(f"➖ Removed **{target_role_proper}** from your roles.", delete_after=5)
-    else:
-        # User doesn't have it -> Check limit
+        return
+
+    # 5. Check Limits for ALL affected games
+    # If I add "Flex", I must not exceed limit in MLBB AND I must not exceed limit in Valorant.
+    for game in affected_games:
+        game_roles_list = GAME_ROLES_CONFIG[game]
+        current_game_roles = []
+        for r in ctx.author.roles:
+            if r.name in game_roles_list:
+                current_game_roles.append(r)
+        
         if len(current_game_roles) >= 2:
-            await ctx.send(f"⚠️ You already have 2 roles for **{target_game}** ({', '.join([r.name for r in current_game_roles])}).\nRemove one first by typing `!gameroles <name>`.", delete_after=10)
-        else:
-            await ctx.author.add_roles(role_obj)
-            # Determine if Primary or Secondary based on count
-            position = "Primary" if len(current_game_roles) == 0 else "Secondary"
-            await ctx.send(f"✅ Added **{target_role_proper}** as your **{position}** role!", delete_after=5)
+            await ctx.send(f"⚠️ Cannot add **{target_role_proper}**. You already have 2 roles for **{game}** ({', '.join([r.name for r in current_game_roles])}).", delete_after=10)
+            return
+
+    # 6. Add Role
+    await ctx.author.add_roles(role_obj)
+    
+    # Calculate position for feedback (based on the first affected game found)
+    primary_game = affected_games[0]
+    game_roles_list = GAME_ROLES_CONFIG[primary_game]
+    current_count = 0
+    for r in ctx.author.roles:
+        if r.name in game_roles_list:
+            current_count += 1
+            
+    position = "Primary" if current_count == 0 else "Secondary"
+    await ctx.send(f"✅ Added **{target_role_proper}** as your **{position}** role!", delete_after=5)
 
 @bot.command()
 async def help(ctx):
@@ -829,7 +888,8 @@ async def help(ctx):
 
     embed.add_field(name="🛡️ Moderators Only", value=(
         "`!syncsolo` - Fix 'Solo' roles for all users.\n"
-        "`!backup` - Download database files."
+        "`!backup` - Download database files.\n"
+        "`!restore` - Upload database files to restore."
     ), inline=False)
 
     await ctx.send(embed=embed)
