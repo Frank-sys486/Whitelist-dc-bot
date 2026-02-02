@@ -869,6 +869,70 @@ async def scanteams(ctx):
     await status_msg.edit(content=f"✅ **Scan Complete!** Restored {restored_count} teams.")
 
 @bot.command()
+async def scanclaims(ctx):
+    """(Moderator Only) Reconstructs claimed_ids.json based on nicknames."""
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    status_msg = await ctx.send("🕵️ **Starting Claim Scan...** This attempts to link Verified users back to Student IDs based on their nickname.")
+    
+    # 1. Build a lookup map: Surname -> List of Student IDs
+    surname_map = {}
+    for sid, info in student_db.items():
+        # Logic must match !verify nickname generation exactly
+        surname = info['name'].split()[0].replace(',', '')
+        if surname not in surname_map:
+            surname_map[surname] = []
+        surname_map[surname].append(sid)
+
+    restored_count = 0
+    ambiguous_count = 0
+    not_found_count = 0
+    
+    verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
+    if not verified_role:
+        await ctx.send("Error: 'Verified' role not found.")
+        return
+
+    for member in ctx.guild.members:
+        if verified_role in member.roles:
+            # Skip if this user is already linked in our database
+            if str(member.id) in claimed_ids.values():
+                continue
+
+            nickname = member.display_name
+            
+            matches = surname_map.get(nickname)
+            
+            if matches and len(matches) == 1:
+                # Unique match found!
+                sid = matches[0]
+                
+                # Integrity check: Is this ID already claimed by someone else?
+                if sid in claimed_ids:
+                    continue
+                    
+                claimed_ids[sid] = str(member.id)
+                restored_count += 1
+            elif matches and len(matches) > 1:
+                # Multiple students have this surname (e.g. "Santos")
+                ambiguous_count += 1
+            else:
+                # Nickname doesn't match any student surname
+                not_found_count += 1
+
+    save_claimed_ids(claimed_ids)
+    
+    embed = discord.Embed(title="✅ Claim Scan Complete", color=discord.Color.green())
+    embed.add_field(name="Restored", value=str(restored_count), inline=True)
+    embed.add_field(name="Ambiguous (Skipped)", value=str(ambiguous_count), inline=True)
+    embed.add_field(name="No Match (Skipped)", value=str(not_found_count), inline=True)
+    embed.set_footer(text="Ambiguous users share a surname. They must re-verify manually.")
+    
+    await status_msg.edit(content=None, embed=embed)
+
+@bot.command()
 async def gameroles(ctx, *, role_name: str = None):
     """Lists roles or assigns them (Max 2 per game). Usage: !gameroles [role_name]"""
     
@@ -992,7 +1056,8 @@ async def help(ctx):
         "`!syncsolo` - Fix 'Solo' roles for all users.\n"
         "`!backup` - Download database files.\n"
         "`!restore` - Upload database files to restore.\n"
-        "`!scanteams` - Rebuild database from server channels."
+        "`!scanteams` - Rebuild database from server channels.\n"
+        "`!scanclaims` - Rebuild claimed IDs from nicknames."
     ), inline=False)
 
     await ctx.send(embed=embed)
