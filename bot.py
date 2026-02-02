@@ -5,11 +5,11 @@ import os
 import csv
 
 # Load student data from CSV
-STUDENT_FILE = "identification.csv"
+STUDENT_FILE = "response.csv"
 student_db = {}
 
 if os.path.exists(STUDENT_FILE):
-    with open(STUDENT_FILE, mode='r', encoding='cp1252') as f:
+    with open(STUDENT_FILE, mode='r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for row in reader:
             # Get Student Number and strip whitespace
@@ -20,7 +20,7 @@ if os.path.exists(STUDENT_FILE):
                 student_db[sid] = {'name': row.get('Full Name', '').strip(), 'sports': set()}
             
             # Add sport to the set (handles duplicates automatically)
-            sport = row.get('Sport', '').strip()
+            sport = row.get('Column 7', '').strip()
             if sport:
                 student_db[sid]['sports'].add(sport)
 else:
@@ -138,7 +138,7 @@ async def verify(ctx, school_id: str = None):
     
     # Change Nickname (First word of Full Name)
     # Example: "Ungco Josh Aiken O." -> "Ungco"
-    new_nickname = student_info['name'].split()[0]
+    new_nickname = student_info['name'].split()[0].replace(',', '')
     
     print(f"Attempting to change nickname for {ctx.author} to '{new_nickname}'...")
 
