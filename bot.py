@@ -722,6 +722,26 @@ async def syncsolo(ctx):
     await status_msg.edit(content=f"✅ **Sync Complete!**\nAdded @Solo to: {added_count}\nRemoved @Solo from: {removed_count}")
 
 @bot.command()
+async def backup(ctx):
+    """(Moderator Only) Uploads the current database files to Discord."""
+    # Check for Moderator role
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    files_to_send = []
+    if os.path.exists(TEAMS_FILE):
+        files_to_send.append(discord.File(TEAMS_FILE))
+    if os.path.exists(CLAIMED_FILE):
+        files_to_send.append(discord.File(CLAIMED_FILE))
+
+    if not files_to_send:
+        await ctx.send("No database files found on the server.")
+        return
+
+    await ctx.send("📦 **System Backup**\nHere are the latest database files:", files=files_to_send)
+
+@bot.command()
 async def gameroles(ctx, *, role_name: str = None):
     """Lists roles or assigns them (Max 2 per game). Usage: !gameroles [role_name]"""
     
@@ -808,7 +828,8 @@ async def help(ctx):
     ), inline=False)
 
     embed.add_field(name="🛡️ Moderators Only", value=(
-        "`!syncsolo` - Fix 'Solo' roles for all users."
+        "`!syncsolo` - Fix 'Solo' roles for all users.\n"
+        "`!backup` - Download database files."
     ), inline=False)
 
     await ctx.send(embed=embed)
