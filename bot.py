@@ -937,11 +937,11 @@ async def scanclaims(ctx):
     await status_msg.edit(content=None, embed=embed)
 
 @bot.command()
-async def gameroles(ctx, *, role_name: str = None):
-    """Lists roles or assigns them (Max 2 per game). Usage: !gameroles [role_name]"""
+async def gameroles(ctx, role1: str = None, role2: str = None):
+    """Lists roles or assigns them (Max 2 per game). Usage: !gameroles [role1] [role2]"""
     
     # 1. If no argument, List Roles AND Current Status
-    if not role_name:
+    if not role1 and not role2:
         embed = discord.Embed(title="🎮 In-Game Roles Manager", description="Type `!gameroles <name>` to add/remove a role.\nYou can have up to **2 roles** per game.", color=discord.Color.purple())
         for game, roles in GAME_ROLES_CONFIG.items():
             # Get all available roles for this game
@@ -967,73 +967,89 @@ async def gameroles(ctx, *, role_name: str = None):
         await ctx.send(embed=embed)
         return
 
-    # 2. Find which game(s) this role belongs to
-    target_role_proper = None
-    affected_games = []
-    
-    # First pass: find the proper casing of the role name
-    for game, roles in GAME_ROLES_CONFIG.items():
-        for r in roles:
-            if r.lower() == role_name.lower():
-                target_role_proper = r
-                break
-        if target_role_proper:
-            break
-    
-    if not target_role_proper:
-        await ctx.send(f"❌ Role **{role_name}** not found. Type `!gameroles` to see the list.", delete_after=5)
-        return
+    # Collect inputs to process
+    roles_to_process = []
+    if role1: roles_to_process.append(role1)
+    if role2: roles_to_process.append(role2)
 
-    # Second pass: Find ALL games this role belongs to (e.g. Flex is in MLBB and Valorant)
-    for game, roles in GAME_ROLES_CONFIG.items():
-        if target_role_proper in roles:
-            affected_games.append(game)
+    # Snapshot of roles to handle updates within the loop (avoids race conditions)
+    current_member_roles = list(ctx.author.roles)
 
-    # 3. Ensure the role exists in the server
-    guild = ctx.guild
-    role_obj = discord.utils.get(guild.roles, name=target_role_proper)
-    
-    if not role_obj:
-        try:
-            role_obj = await guild.create_role(name=target_role_proper, mentionable=True)
-            await ctx.send(f"⚙️ Created new role: **{target_role_proper}**")
-        except discord.Forbidden:
-            await ctx.send("Error: I don't have permission to create roles.", delete_after=5)
-            return
-
-    # 4. Toggle Logic
-    if role_obj in ctx.author.roles:
-        # User has it -> Remove it
-        await ctx.author.remove_roles(role_obj)
-        await ctx.send(f"➖ Removed **{target_role_proper}** from your roles.", delete_after=5)
-        return
-
-    # 5. Check Limits for ALL affected games
-    # If I add "Flex", I must not exceed limit in MLBB AND I must not exceed limit in Valorant.
-    for game in affected_games:
-        game_roles_list = GAME_ROLES_CONFIG[game]
-        current_game_roles = []
-        for r in ctx.author.roles:
-            if r.name in game_roles_list:
-                current_game_roles.append(r)
+    for role_name in roles_to_process:
+        # 2. Find which game(s) this role belongs to
+        target_role_proper = None
+        affected_games = []
         
-        if len(current_game_roles) >= 2:
-            await ctx.send(f"⚠️ Cannot add **{target_role_proper}**. You already have 2 roles for **{game}** ({', '.join([r.name for r in current_game_roles])}).", delete_after=10)
-            return
+        # First pass: find the proper casing of the role name
+        for game, roles in GAME_ROLES_CONFIG.items():
+            for r in roles:
+                if r.lower() == role_name.lower():
+                    target_role_proper = r
+                    break
+            if target_role_proper:
+                break
+        
+        if not target_role_proper:
+            await ctx.send(f"❌ Role **{role_name}** not found. Type `!gameroles` to see the list.", delete_after=5)
+            continue
 
-    # 6. Add Role
-    await ctx.author.add_roles(role_obj)
-    
-    # Calculate position for feedback (based on the first affected game found)
-    primary_game = affected_games[0]
-    game_roles_list = GAME_ROLES_CONFIG[primary_game]
-    current_count = 0
-    for r in ctx.author.roles:
-        if r.name in game_roles_list:
-            current_count += 1
+        # Second pass: Find ALL games this role belongs to (e.g. Flex is in MLBB and Valorant)
+        for game, roles in GAME_ROLES_CONFIG.items():
+            if target_role_proper in roles:
+                affected_games.append(game)
+
+        # 3. Ensure the role exists in the server
+        guild = ctx.guild
+        role_obj = discord.utils.get(guild.roles, name=target_role_proper)
+        
+        if not role_obj:
+            try:
+                role_obj = await guild.create_role(name=target_role_proper, mentionable=True)
+                await ctx.send(f"⚙️ Created new role: **{target_role_proper}**")
+            except discord.Forbidden:
+                await ctx.send("Error: I don't have permission to create roles.", delete_after=5)
+                continue
+
+        # 4. Toggle Logic
+        if role_obj in current_member_roles:
+            # User has it -> Remove it
+            await ctx.author.remove_roles(role_obj)
+            current_member_roles.remove(role_obj) # Update local snapshot
+            await ctx.send(f"➖ Removed **{target_role_proper}** from your roles.", delete_after=5)
+            continue
+
+        # 5. Check Limits for ALL affected games
+        # If I add "Flex", I must not exceed limit in MLBB AND I must not exceed limit in Valorant.
+        limit_reached = False
+        for game in affected_games:
+            game_roles_list = GAME_ROLES_CONFIG[game]
+            current_game_roles = []
+            for r in current_member_roles: # Check against local snapshot
+                if r.name in game_roles_list:
+                    current_game_roles.append(r)
             
-    position = "Primary" if current_count == 0 else "Secondary"
-    await ctx.send(f"✅ Added **{target_role_proper}** as your **{position}** role!", delete_after=5)
+            if len(current_game_roles) >= 2:
+                await ctx.send(f"⚠️ Cannot add **{target_role_proper}**. You already have 2 roles for **{game}** ({', '.join([r.name for r in current_game_roles])}).", delete_after=10)
+                limit_reached = True
+                break
+        
+        if limit_reached:
+            continue
+
+        # 6. Add Role
+        await ctx.author.add_roles(role_obj)
+        current_member_roles.append(role_obj) # Update local snapshot
+        
+        # Calculate position for feedback (based on the first affected game found)
+        primary_game = affected_games[0]
+        game_roles_list = GAME_ROLES_CONFIG[primary_game]
+        current_count = 0
+        for r in current_member_roles:
+            if r.name in game_roles_list:
+                current_count += 1
+                
+        position = "Primary" if current_count == 1 else "Secondary"
+        await ctx.send(f"✅ Added **{target_role_proper}** as your **{position}** role!", delete_after=5)
 
 @bot.command()
 async def help(ctx):
@@ -1047,7 +1063,7 @@ async def help(ctx):
         "`!leave` - Leave your current team.\n"
         "`!teamstats` - View tournament statistics.\n"
         "`!gameroles` - List available roles.\n"
-        "`!gameroles <role>` - Add/Remove a role (Max 2)."
+        "`!gameroles <role1> [role2]` - Add/Remove up to 2 roles."
     ), inline=False)
 
     embed.add_field(name="👑 Captains Only", value=(
