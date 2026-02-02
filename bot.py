@@ -58,7 +58,7 @@ async def on_member_join(member):
         channel = discord.utils.get(member.guild.text_channels, name="general")
     
     if channel:
-        await channel.send(f"Welcome {member.mention}! Please verify yourself by typing `!verify 20XX-XX-XXXXX`.")
+        await channel.send(f"Welcome {member.mention}! Please verify yourself by typing `!verify 20XX-XX-XXXXX`.", delete_after=60)
 
     # Automatically assign 'Unverified' role
     unverified_role = discord.utils.get(member.guild.roles, name="Unverified")
@@ -80,11 +80,22 @@ async def on_message(message):
         is_mod = discord.utils.get(message.author.roles, name="Moderator")
         
         # If user is NOT a moderator
+        mod_log_channel = discord.utils.get(message.guild.text_channels, name="mod-logs")
         if not is_mod:
             # If it's NOT a verify command, delete it immediately
             if not message.content.startswith("!verify"):
+                # Log the deleted message to mod-logs
+                if mod_log_channel:
+                    embed = discord.Embed(
+                        title="Deleted Message",
+                        description=f"**Author:** {message.author.mention}\n**Channel:** {message.channel.mention}\n**Content:** {message.content}",
+                        color=discord.Color.red()
+                    )
+                    await mod_log_channel.send(embed=embed)
+
+                # Delete the message and remind user of correct format
                 await message.delete()
-                await message.channel.send(f"{message.author.mention}, please verify using the format: `!verify 20XX-XX-XXXXX`", delete_after=5)
+                await message.channel.send(f"{message.author.mention}, please verify using the format: `!verify 20XX-XX-XXXXX`", delete_after=5)                
                 return
 
     # Process commands (like !verify)
