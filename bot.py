@@ -142,6 +142,11 @@ async def verify(ctx, school_id: str = None):
         role = discord.utils.get(ctx.guild.roles, name=sport_name)
         if role:
             roles_added.append(role)
+
+    # Add the base 'Verified' role
+    verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
+    if verified_role:
+        roles_added.append(verified_role)
     
     if roles_added:
         await ctx.author.add_roles(*roles_added)
