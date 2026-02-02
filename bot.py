@@ -357,7 +357,7 @@ async def createteam(ctx, game: str = None, *, team_name: str = None):
 
     # 6. Post Captain's Guide
     embed = discord.Embed(title=f"👑 Welcome to {team_name}", description="You are the Captain! Here are your commands:", color=discord.Color.green())
-    embed.add_field(name="!invite @user ", value="Invite a player to your team.", inline=False)
+    embed.add_field(name="!invite <user> ", value="Invite a player to your team.", inline=False)
     embed.add_field(name="!kick @user", value="Remove a player from your team.", inline=False)
     embed.add_field(name="!disband", value="Delete this team permanently.", inline=False)
     await text_channel.send(content=ctx.author.mention, embed=embed)
@@ -395,7 +395,7 @@ async def teamstats(ctx):
 
 @bot.command()
 async def invite(ctx, member: discord.Member):
-    """Captain invites a player: !invite @User"""
+    """Captain invites a player: !invite <User> !invite Paxton"""
     # 1. Check if Author is a Captain
     teams = load_teams()
     my_team_name = None
@@ -1097,11 +1097,11 @@ async def help(ctx):
 
     # Captain Commands
     embed.add_field(name="👑 Captain Commands", value=(
-        "**`!invite @User`**\n"
+        "**`!invite <User>` `!invite Paxton`**\n"
         "Sends an official invite to a player via DM.\n"
         "> **Limit:** Invitee must be Verified and not in a team.\n\n"
         
-        "**`!kick @User`**\n"
+        "**`!kick <User>`**\n"
         "Removes a player from the team and revokes channel access.\n\n"
         
         "**`!disband`**\n"
