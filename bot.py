@@ -4,6 +4,15 @@ import json
 import os
 import csv
 import datetime
+import random
+import math
+try:
+    from jinja2 import Template
+    from weasyprint import HTML
+    HAS_VISUALS = True
+except ImportError:
+    HAS_VISUALS = False
+    print("Warning: jinja2 or weasyprint not found. Visual brackets disabled.")
 
 # Load student data from CSV
 STUDENT_FILE = "response.csv"
@@ -52,6 +61,19 @@ def load_teams():
 def save_teams(teams):
     with open(TEAMS_FILE, "w") as f:
         json.dump(teams, f, indent=4, default=str)
+
+# File to track Brackets
+BRACKETS_FILE = "brackets.json"
+
+def load_brackets():
+    if os.path.exists(BRACKETS_FILE):
+        with open(BRACKETS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_brackets(data):
+    with open(BRACKETS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
 # Configuration for In-Game Roles
 GAME_ROLES_CONFIG = {
@@ -1022,6 +1044,163 @@ async def scanteams(ctx):
     save_teams(teams)
     await update_mod_dashboard(guild)
     await status_msg.edit(content=f"✅ **Scan Complete!** Restored {restored_count} teams.")
+
+@bot.command()
+async def createbracket(ctx, game: str = None):
+    """(Moderator Only) Generates a Single Elimination bracket for a specific game."""
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    if not game:
+        await ctx.send("Usage: `!createbracket <game>` (e.g., valorant)", delete_after=5)
+        return
+
+    game_key = game.lower()
+    teams_db = load_teams()
+    
+    # 1. Fetch Teams for this Game
+    participating_teams = [name for name, data in teams_db.items() if data['game'] == game_key]
+    
+    if len(participating_teams) < 2:
+        await ctx.send(f"❌ Not enough teams to create a bracket for **{game}**. Need at least 2.", delete_after=5)
+        return
+
+    status_msg = await ctx.send(f"🎲 **Generating Bracket for {len(participating_teams)} teams...**")
+
+    # 2. Shuffle Seeds
+    random.shuffle(participating_teams)
+    
+    # 3. Calculate Bracket Size (Next Power of 2)
+    # e.g., 6 teams -> needs size 8
+    count = len(participating_teams)
+    bracket_size = 1
+    while bracket_size < count:
+        bracket_size *= 2
+    
+    # 4. Generate Seeding Order (Standard Snake Seeding)
+    # Recursive function to get order: [1, 8, 4, 5, 2, 7, 3, 6]
+    def get_seeds(n):
+        if n == 1: return [1]
+        seeds = get_seeds(n // 2)
+        new_seeds = []
+        for s in seeds:
+            new_seeds.append(s)
+            new_seeds.append(n + 1 - s)
+        return new_seeds
+
+    seed_order = get_seeds(bracket_size)
+    
+    # Map Teams to Slots (1-based index)
+    # Slots 1..count have teams. Slots count+1..bracket_size are BYES.
+    slots = {}
+    for i, seed in enumerate(seed_order):
+        # seed is 1-based rank.
+        # If seed <= count, it's a real team.
+        # If seed > count, it's a BYE.
+        if seed <= count:
+            slots[i] = participating_teams[seed - 1]
+        else:
+            slots[i] = "BYE"
+
+    # 5. Build Match Structure (Binary Heap Array Logic)
+    # Root is Match 1. Children of Match i are 2*i and 2*i+1.
+    # We work backwards from the leaves.
+    # Total matches = bracket_size - 1
+    
+    matches = {}
+    
+    # Create leaf matches (Round 1)
+    # We have bracket_size / 2 matches in the first round.
+    # Match IDs for leaves start at bracket_size // 2
+    
+    # Actually, let's just fill the array.
+    # Array size 2*bracket_size. Indices bracket_size to 2*bracket_size-1 are the team slots.
+    # Indices 1 to bracket_size-1 are matches.
+    
+    tree = [None] * (2 * bracket_size)
+    
+    # Fill leaves
+    for i in range(bracket_size):
+        tree[bracket_size + i] = slots[i]
+
+    # Build matches
+    # We iterate from the last match ID down to 1
+    for match_id in range(bracket_size - 1, 0, -1):
+        team1 = tree[2 * match_id]
+        team2 = tree[2 * match_id + 1]
+        
+        winner = None
+        # Auto-advance BYEs
+        if team1 == "BYE": winner = team2
+        elif team2 == "BYE": winner = team1
+        
+        # Determine Round Number
+        # Log2 of match_id roughly gives depth. 
+        # Deepest round (Round 1) has highest IDs.
+        # Let's calculate round from bottom up.
+        # Total rounds = log2(bracket_size)
+        total_rounds = int(math.log2(bracket_size))
+        current_depth = int(math.log2(match_id))
+        round_num = total_rounds - current_depth
+
+        matches[str(match_id)] = {
+            "id": match_id,
+            "round": round_num,
+            "team1": team1 if isinstance(team1, str) else None, # If it's a match obj, it's None (TBD)
+            "team2": team2 if isinstance(team2, str) else None,
+            "winner": winner,
+            "next_match_id": match_id // 2 if match_id > 1 else None
+        }
+        
+        # If we have a winner (due to BYE), propagate up for the next iteration
+        if winner:
+            tree[match_id] = winner
+        else:
+            tree[match_id] = {"match_ref": match_id} # Placeholder
+
+    # 6. Save to Database
+    brackets = load_brackets()
+    brackets[game_key] = {
+        "format": "single_elimination",
+        "matches": matches,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+    save_brackets(brackets)
+
+    # 7. Generate Visuals
+    if HAS_VISUALS and os.path.exists("bracket_template.html"):
+        # Group matches by round for the template
+        rounds_data = {}
+        for m in matches.values():
+            r = m['round']
+            if r not in rounds_data: rounds_data[r] = []
+            rounds_data[r].append(m)
+        
+        # Render HTML
+        with open("bracket_template.html", "r") as f:
+            template = Template(f.read())
+        
+        html_content = template.render(game_name=game.upper(), rounds=rounds_data)
+        
+        # Save HTML file
+        html_filename = f"{game_key}_bracket.html"
+        with open(html_filename, "w") as f:
+            f.write(html_content)
+            
+        # Render Image
+        img_filename = f"{game_key}_bracket.png"
+        try:
+            HTML(string=html_content).write_png(img_filename)
+            files = [discord.File(img_filename), discord.File(html_filename)]
+            await ctx.send(f"🏆 **{game.upper()} Tournament Bracket Created!**", files=files)
+        except Exception as e:
+            await ctx.send(f"✅ Bracket created, but image generation failed: {e}")
+            await ctx.send(file=discord.File(html_filename))
+    else:
+        await ctx.send(f"✅ Bracket created! (Visuals disabled or template missing). Check `brackets.json`.")
+    
+    await status_msg.delete()
 
 @bot.command()
 async def scanclaims(ctx):
