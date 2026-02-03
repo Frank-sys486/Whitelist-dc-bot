@@ -722,7 +722,7 @@ async def syncsolo(ctx):
     await status_msg.edit(content=f"✅ **Sync Complete!**\nAdded @Solo to: {added_count}\nRemoved @Solo from: {removed_count}")
 
 @bot.command()
-async def setteam(ctx, member: discord.Member, team_name: str):
+async def setteam(ctx, member: discord.Member, *, team_name: str):
     """(Moderator Only) Manually assigns a user to a team."""
     # Check for Moderator role
     if "Moderator" not in [r.name for r in ctx.author.roles]:
@@ -730,6 +730,9 @@ async def setteam(ctx, member: discord.Member, team_name: str):
         return
 
     teams = load_teams()
+
+    # Clean quotes from team name (e.g., "CCS" -> CCS)
+    team_name = team_name.strip('"')
 
     # 1. Check if Team Exists
     if team_name not in teams:
@@ -1166,6 +1169,7 @@ async def help(ctx):
 
     # Moderator Commands
     embed.add_field(name="🛡️ Moderator Tools", value=(
+        "`!setteam <User> \"Team\"` - Manually assign user to team.\n"
         "`!syncsolo` - Fix 'Solo' roles for all users.\n"
         "`!backup` - Download database files.\n"
         "`!restore` - Upload database files to restore.\n"
