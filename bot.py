@@ -231,6 +231,74 @@ async def update_solo_role(guild, member, has_team):
         if solo_role not in member.roles:
             await member.add_roles(solo_role)
 
+async def perform_verification(guild, member, student_id, moderator_user):
+    """Reusable logic to verify a user, assign roles, and log the action."""
+    clean_id = student_id.strip()
+    
+    if clean_id not in student_db:
+        return False, f"Student ID {clean_id} not found."
+
+    student_info = student_db[clean_id]
+    user_id = str(member.id)
+
+    # 1. Manage Claimed IDs (Prevent Duplicates)
+    ids_to_remove = [sid for sid, uid in claimed_ids.items() if uid == user_id]
+    for old_sid in ids_to_remove:
+        del claimed_ids[old_sid]
+    
+    claimed_ids[clean_id] = user_id
+    save_claimed_ids(claimed_ids)
+
+    # 2. Update Nickname
+    new_nickname = student_info['name'].split()[0].replace(',', '')
+    try:
+        if member.id != guild.owner_id:
+            await member.edit(nick=new_nickname)
+    except:
+        pass # Ignore permission errors
+
+    # 3. Assign Roles
+    roles_to_add = []
+    verified_role = discord.utils.get(guild.roles, name="Verified")
+    if verified_role: roles_to_add.append(verified_role)
+    
+    for sport in student_info['sports']:
+        r = discord.utils.get(guild.roles, name=sport)
+        if r: roles_to_add.append(r)
+    
+    # Solo Role (Only if NOT in a team)
+    teams = load_teams()
+    in_team = False
+    for t in teams.values():
+        if user_id in t['members']:
+            in_team = True
+            break
+    
+    if not in_team:
+        solo_role = discord.utils.get(guild.roles, name="Solo")
+        if solo_role: roles_to_add.append(solo_role)
+    
+    if roles_to_add:
+        await member.add_roles(*roles_to_add)
+
+    # 4. Remove Unverified
+    unverified_role = discord.utils.get(guild.roles, name="Unverified")
+    if unverified_role and unverified_role in member.roles:
+        await member.remove_roles(unverified_role)
+
+    # 5. Log Action
+    log_channel = discord.utils.get(guild.text_channels, name="mod-logs")
+    if log_channel:
+        embed = discord.Embed(title="🛡️ Verification Action", color=discord.Color.orange())
+        embed.add_field(name="User", value=member.mention, inline=True)
+        embed.add_field(name="Student ID", value=clean_id, inline=True)
+        embed.add_field(name="Nickname", value=new_nickname, inline=True)
+        embed.add_field(name="Action By", value=moderator_user.mention, inline=False)
+        embed.set_footer(text="User has been linked and roles assigned.")
+        await log_channel.send(embed=embed)
+    
+    return True, f"Verified {member.display_name} as {new_nickname}"
+
 async def update_mod_dashboard(guild):
     """Updates the #mod-team channel with a list of all teams."""
     teams = load_teams()
@@ -1022,88 +1090,79 @@ async def scanclaims(ctx):
 @bot.command()
 async def forceverify(ctx, member: discord.Member, student_id: str):
     """(Moderator Only) Manually verifies a user. Usage: !forceverify @User <StudentID>"""
-    # Check Moderator Role
     if "Moderator" not in [r.name for r in ctx.author.roles]:
         await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
         return
 
-    clean_id = student_id.strip()
+    success, msg = await perform_verification(ctx.guild, member, student_id, ctx.author)
+    if success:
+        await ctx.send(f"✅ {msg}", delete_after=5)
+    else:
+        await ctx.send(f"❌ {msg}", delete_after=5)
 
-    # 1. Check if Student ID exists in CSV
-    if clean_id not in student_db:
-        await ctx.send(f"❌ Student ID **{clean_id}** not found in the database.", delete_after=5)
+@bot.command()
+async def fixunverified(ctx):
+    """(Moderator Only) Auto-verifies users who are in a team but missing the Verified role."""
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
         return
 
-    student_info = student_db[clean_id]
-    
-    # 2. Manage Claimed IDs
-    # Remove any previous ID claimed by this specific Discord user (prevent duplicates)
-    user_id = str(member.id)
-    ids_to_remove = [sid for sid, uid in claimed_ids.items() if uid == user_id]
-    for old_sid in ids_to_remove:
-        del claimed_ids[old_sid]
-    
-    # Assign new ID
-    claimed_ids[clean_id] = user_id
-    save_claimed_ids(claimed_ids)
+    status_msg = await ctx.send("🕵️ **Scanning for unverified team members...**")
 
-    # 3. Update Nickname
-    # Logic: First word of Full Name
-    new_nickname = student_info['name'].split()[0].replace(',', '')
-    try:
-        await member.edit(nick=new_nickname)
-    except discord.Forbidden:
-        await ctx.send(f"⚠️ Verified, but couldn't change nickname (Missing Permissions).", delete_after=5)
-    except Exception:
-        pass # Ignore other errors
+    # Build surname map for lookup (Nickname -> List of IDs)
+    surname_map = {}
+    for sid, info in student_db.items():
+        surname = info['name'].split()[0].replace(',', '')
+        if surname not in surname_map: surname_map[surname] = []
+        surname_map[surname].append(sid)
 
-    # 4. Assign Roles
-    roles_to_add = []
-    
-    # Base Verified Role
-    verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
-    if verified_role:
-        roles_to_add.append(verified_role)
-        
-    # Sport Roles from CSV
-    for sport in student_info['sports']:
-        r = discord.utils.get(ctx.guild.roles, name=sport)
-        if r:
-            roles_to_add.append(r)
-            
-    # Solo Role (Only if not in a team)
     teams = load_teams()
-    in_team = False
+    team_members = set()
     for t in teams.values():
-        if user_id in t['members']:
-            in_team = True
-            break
-            
-    if not in_team:
-        solo_role = discord.utils.get(ctx.guild.roles, name="Solo")
-        if solo_role:
-            roles_to_add.append(solo_role)
+        for m in t['members']:
+            team_members.add(m)
 
-    if roles_to_add:
-        await member.add_roles(*roles_to_add)
-
-    # Remove Unverified
-    unverified_role = discord.utils.get(ctx.guild.roles, name="Unverified")
-    if unverified_role and unverified_role in member.roles:
-        await member.remove_roles(unverified_role)
-
-    # 5. Log to #mod-logs
+    verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
+    fixed_count = 0
+    failed_count = 0
     log_channel = discord.utils.get(ctx.guild.text_channels, name="mod-logs")
-    if log_channel:
-        embed = discord.Embed(title="🛡️ Manual Verification", color=discord.Color.orange())
-        embed.add_field(name="User", value=member.mention, inline=True)
-        embed.add_field(name="Student ID", value=clean_id, inline=True)
-        embed.add_field(name="Nickname", value=new_nickname, inline=True)
-        embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
-        embed.set_footer(text="User has been linked and roles assigned.")
-        await log_channel.send(embed=embed)
 
-    await ctx.send(f"✅ Manually verified **{member.display_name}**!", delete_after=5)
+    for user_id in team_members:
+        member = ctx.guild.get_member(int(user_id))
+        if not member: continue
+        
+        # If they are in a team but NOT verified
+        if verified_role not in member.roles:
+            student_id = None
+            
+            # Strategy 1: Check if they already have a claimed ID (maybe role was just removed)
+            for sid, uid in claimed_ids.items():
+                if uid == user_id:
+                    student_id = sid
+                    break
+            
+            # Strategy 2: Try to match Nickname to Database
+            if not student_id:
+                nick = member.display_name
+                matches = surname_map.get(nick)
+                if matches and len(matches) == 1:
+                    # Unique match found! Check if ID is free.
+                    if matches[0] not in claimed_ids:
+                         student_id = matches[0]
+
+            if student_id:
+                success, msg = await perform_verification(ctx.guild, member, student_id, ctx.author)
+                if success:
+                    fixed_count += 1
+                else:
+                    failed_count += 1
+            else:
+                # Log ambiguity so Mod can fix manually
+                if log_channel:
+                    await log_channel.send(f"⚠️ **Auto-Fix Failed:** {member.mention} is in a team but unverified. Could not determine Student ID automatically.")
+                failed_count += 1
+
+    await status_msg.edit(content=f"✅ **Fix Complete.**\nFixed: {fixed_count}\nFailed/Ambiguous: {failed_count}")
 
 @bot.command()
 async def gameroles(ctx, role1: str = None, role2: str = None):
@@ -1281,6 +1340,7 @@ async def help(ctx):
     embed.add_field(name="🛡️ Moderator Tools", value=(
         "`!setteam <User> \"Team\"` - Manually assign user to team.\n"
         "`!forceverify <User> <ID>` - Manually verify a student.\n"
+        "`!fixunverified` - Auto-fix unverified team members.\n"
         "`!togglecreation` - Pause/Resume team creation.\n"
         "`!syncsolo` - Fix 'Solo' roles for all users.\n"
         "`!backup` - Download database files.\n"
