@@ -907,6 +907,8 @@ async def backup(ctx):
         files_to_send.append(discord.File(TEAMS_FILE))
     if os.path.exists(CLAIMED_FILE):
         files_to_send.append(discord.File(CLAIMED_FILE))
+    if os.path.exists(BRACKETS_FILE):
+        files_to_send.append(discord.File(BRACKETS_FILE))
 
     if not files_to_send:
         await ctx.send("No database files found on the server.")
@@ -936,8 +938,11 @@ async def restore(ctx):
         global claimed_ids
         claimed_ids = load_claimed_ids()
         await ctx.send(f"✅ **Success!** `claimed_ids.json` has been restored. Verified users updated.")
+    elif attachment.filename == "brackets.json":
+        await attachment.save(BRACKETS_FILE)
+        await ctx.send(f"✅ **Success!** `brackets.json` has been restored.")
     else:
-        await ctx.send("❌ **Error:** Unknown file. Please upload `teams.json` or `claimed_ids.json`.", delete_after=5)
+        await ctx.send("❌ **Error:** Unknown file. Please upload `teams.json`, `claimed_ids.json`, or `brackets.json`.", delete_after=5)
 
 @bot.command()
 async def scanteams(ctx):
