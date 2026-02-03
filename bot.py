@@ -61,6 +61,9 @@ GAME_ROLES_CONFIG = {
 
 claimed_ids = load_claimed_ids()
 
+# Global flag to control team creation
+team_creation_enabled = True
+
 # Bot setup
 intents = discord.Intents.default()
 intents.members = True  # Needed to manage roles
@@ -278,6 +281,10 @@ async def update_mod_dashboard(guild):
 async def createteam(ctx, game: str = None, *, team_name: str = None):
     """Creates a team, private channels, and role. Usage: !createteam valorant "Team Name" """
     
+    if not team_creation_enabled:
+        await ctx.send(f"🚫 {ctx.author.mention}, team creation is currently **PAUSED** by the moderators.", delete_after=10)
+        return
+
     # 1. Input Validation
     if not game or not team_name:
         await ctx.send(f"{ctx.author.mention}, usage: `!createteam <game> <team_name>`\nExample: `!createteam valorant Team Eagles`", delete_after=10)
@@ -780,6 +787,23 @@ async def setteam(ctx, member: discord.Member, *, team_name: str):
     # Update Dashboard
     await update_mod_dashboard(ctx.guild)
     await ctx.send(f"✅ Moderator has added **{member.display_name}** to **{team_name}**!", delete_after=5)
+
+@bot.command()
+async def togglecreation(ctx):
+    """(Moderator Only) Toggles team creation on/off."""
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    global team_creation_enabled
+    team_creation_enabled = not team_creation_enabled
+    
+    status = "ENABLED" if team_creation_enabled else "PAUSED"
+    color = discord.Color.green() if team_creation_enabled else discord.Color.red()
+    
+    embed = discord.Embed(title="Team Creation Status", description=f"Team creation is now **{status}**.", color=color)
+    await ctx.send(embed=embed)
+
 @bot.command()
 async def backup(ctx):
     """(Moderator Only) Uploads the current database files to Discord."""
@@ -996,6 +1020,92 @@ async def scanclaims(ctx):
     await status_msg.edit(content=None, embed=embed)
 
 @bot.command()
+async def forceverify(ctx, member: discord.Member, student_id: str):
+    """(Moderator Only) Manually verifies a user. Usage: !forceverify @User <StudentID>"""
+    # Check Moderator Role
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    clean_id = student_id.strip()
+
+    # 1. Check if Student ID exists in CSV
+    if clean_id not in student_db:
+        await ctx.send(f"❌ Student ID **{clean_id}** not found in the database.", delete_after=5)
+        return
+
+    student_info = student_db[clean_id]
+    
+    # 2. Manage Claimed IDs
+    # Remove any previous ID claimed by this specific Discord user (prevent duplicates)
+    user_id = str(member.id)
+    ids_to_remove = [sid for sid, uid in claimed_ids.items() if uid == user_id]
+    for old_sid in ids_to_remove:
+        del claimed_ids[old_sid]
+    
+    # Assign new ID
+    claimed_ids[clean_id] = user_id
+    save_claimed_ids(claimed_ids)
+
+    # 3. Update Nickname
+    # Logic: First word of Full Name
+    new_nickname = student_info['name'].split()[0].replace(',', '')
+    try:
+        await member.edit(nick=new_nickname)
+    except discord.Forbidden:
+        await ctx.send(f"⚠️ Verified, but couldn't change nickname (Missing Permissions).", delete_after=5)
+    except Exception:
+        pass # Ignore other errors
+
+    # 4. Assign Roles
+    roles_to_add = []
+    
+    # Base Verified Role
+    verified_role = discord.utils.get(ctx.guild.roles, name="Verified")
+    if verified_role:
+        roles_to_add.append(verified_role)
+        
+    # Sport Roles from CSV
+    for sport in student_info['sports']:
+        r = discord.utils.get(ctx.guild.roles, name=sport)
+        if r:
+            roles_to_add.append(r)
+            
+    # Solo Role (Only if not in a team)
+    teams = load_teams()
+    in_team = False
+    for t in teams.values():
+        if user_id in t['members']:
+            in_team = True
+            break
+            
+    if not in_team:
+        solo_role = discord.utils.get(ctx.guild.roles, name="Solo")
+        if solo_role:
+            roles_to_add.append(solo_role)
+
+    if roles_to_add:
+        await member.add_roles(*roles_to_add)
+
+    # Remove Unverified
+    unverified_role = discord.utils.get(ctx.guild.roles, name="Unverified")
+    if unverified_role and unverified_role in member.roles:
+        await member.remove_roles(unverified_role)
+
+    # 5. Log to #mod-logs
+    log_channel = discord.utils.get(ctx.guild.text_channels, name="mod-logs")
+    if log_channel:
+        embed = discord.Embed(title="🛡️ Manual Verification", color=discord.Color.orange())
+        embed.add_field(name="User", value=member.mention, inline=True)
+        embed.add_field(name="Student ID", value=clean_id, inline=True)
+        embed.add_field(name="Nickname", value=new_nickname, inline=True)
+        embed.add_field(name="Moderator", value=ctx.author.mention, inline=False)
+        embed.set_footer(text="User has been linked and roles assigned.")
+        await log_channel.send(embed=embed)
+
+    await ctx.send(f"✅ Manually verified **{member.display_name}**!", delete_after=5)
+
+@bot.command()
 async def gameroles(ctx, role1: str = None, role2: str = None):
     """Lists roles or assigns them (Max 2 per game). Usage: !gameroles [role1] [role2]"""
     
@@ -1170,6 +1280,8 @@ async def help(ctx):
     # Moderator Commands
     embed.add_field(name="🛡️ Moderator Tools", value=(
         "`!setteam <User> \"Team\"` - Manually assign user to team.\n"
+        "`!forceverify <User> <ID>` - Manually verify a student.\n"
+        "`!togglecreation` - Pause/Resume team creation.\n"
         "`!syncsolo` - Fix 'Solo' roles for all users.\n"
         "`!backup` - Download database files.\n"
         "`!restore` - Upload database files to restore.\n"
