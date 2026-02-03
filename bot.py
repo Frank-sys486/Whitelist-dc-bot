@@ -722,6 +722,62 @@ async def syncsolo(ctx):
     await status_msg.edit(content=f"✅ **Sync Complete!**\nAdded @Solo to: {added_count}\nRemoved @Solo from: {removed_count}")
 
 @bot.command()
+async def setteam(ctx, member: discord.Member, team_name: str):
+    """(Moderator Only) Manually assigns a user to a team."""
+    # Check for Moderator role
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    teams = load_teams()
+
+    # 1. Check if Team Exists
+    if team_name not in teams:
+        await ctx.send(f"Team **{team_name}** does not exist. Check spelling (case-sensitive).", delete_after=5)
+        return
+
+    team_data = teams[team_name]
+    user_id = str(member.id)
+
+    # 2. Check if User is already in a team
+    for t_name, t_data in teams.items():
+        if user_id in t_data['members']:
+            await ctx.send(f"{member.display_name} is already in **{t_name}**. Remove them first.", delete_after=5)
+            return
+
+    # 3. Process Joining
+    # Update Database
+    team_data["members"].append(user_id)
+    save_teams(teams)
+
+    # Update Discord Role
+    role_id = team_data.get("role_id")
+    if role_id:
+        role = ctx.guild.get_role(role_id)
+        if role:
+            await member.add_roles(role)
+
+    # Update Channel Permissions (Text & Voice)
+    # We need to explicitly let them see the channel
+    text_channel = ctx.guild.get_channel(team_data["text_channel_id"])
+    voice_channel = ctx.guild.get_channel(team_data["voice_channel_id"])
+
+    overwrite = discord.PermissionOverwrite(read_messages=True, connect=True)
+
+    if text_channel:
+        await text_channel.set_permissions(member, overwrite=overwrite)
+        await text_channel.send(f"👋 Moderator has added {member.mention} to the team!")
+
+    if voice_channel:
+        await voice_channel.set_permissions(member, overwrite=overwrite)
+
+    # Update Solo Status
+    await update_solo_role(ctx.guild, member, has_team=True)
+
+    # Update Dashboard
+    await update_mod_dashboard(ctx.guild)
+    await ctx.send(f"✅ Moderator has added **{member.display_name}** to **{team_name}**!", delete_after=5)
+@bot.command()
 async def backup(ctx):
     """(Moderator Only) Uploads the current database files to Discord."""
     # Check for Moderator role
