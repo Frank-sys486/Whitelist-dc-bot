@@ -6,6 +6,8 @@ import csv
 import datetime
 import random
 import math
+import zipfile
+import io
 try:
     from jinja2 import Template
     from weasyprint import HTML
@@ -1206,6 +1208,147 @@ async def createbracket(ctx, game: str = None):
         await ctx.send(f"✅ Bracket created! (Visuals disabled or template missing). Check `brackets.json`.")
     
     await status_msg.delete()
+
+@bot.command()
+async def setupmatches(ctx, game: str = None):
+    """(Moderator Only) Creates/Links private channels for active matches."""
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    if not game:
+        await ctx.send("Usage: `!setupmatches <game>`", delete_after=5)
+        return
+
+    game_key = game.lower()
+    brackets = load_brackets()
+    
+    if game_key not in brackets:
+        await ctx.send(f"❌ No bracket found for **{game}**. Create one first with `!createbracket`.", delete_after=5)
+        return
+
+    guild = ctx.guild
+    bracket_data = brackets[game_key]
+    matches = bracket_data['matches']
+    
+    # 1. Find/Create Category
+    category_name = f"{game_key} Battle"
+    category = discord.utils.find(lambda c: c.name.lower() == category_name.lower(), guild.categories)
+    
+    if not category:
+        category = await guild.create_category(category_name)
+        await ctx.send(f"📁 Created category: **{category_name}**")
+
+    created_count = 0
+    linked_count = 0
+
+    # 2. Process Matches
+    for match_id, match in matches.items():
+        # Skip if match is already finished (has a winner)
+        if match.get('winner'):
+            continue
+            
+        # Skip if NO teams are known yet (TBD vs TBD) - Wait for previous rounds
+        if not match.get('team1') and not match.get('team2'):
+            continue
+
+        # Define expected channel name prefix (e.g., "match-1")
+        channel_prefix = f"match-{match_id}"
+        
+        # A. Check for EXISTING channel (Manual Creation Adaptation)
+        existing_channel = None
+        for channel in category.text_channels:
+            if channel.name.startswith(channel_prefix):
+                existing_channel = channel
+                break
+        
+        target_channel = existing_channel
+        
+        # B. Create Channel if missing
+        if not target_channel:
+            # Name: match-1-teamA-vs-teamB
+            t1 = match.get('team1') or "TBD"
+            t2 = match.get('team2') or "TBD"
+            # Sanitize names for discord channel (lowercase, no spaces)
+            chan_name = f"{channel_prefix}-{t1}-vs-{t2}".lower().replace(" ", "-")
+            
+            # Permissions: Private to Mods + Teams
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                guild.me: discord.PermissionOverwrite(read_messages=True)
+            }
+            
+            # Add Mod Role
+            mod_role = discord.utils.get(guild.roles, name="Moderator")
+            if mod_role: overwrites[mod_role] = discord.PermissionOverwrite(read_messages=True)
+            
+            # Add Team Roles
+            if match.get('team1'):
+                r1 = discord.utils.get(guild.roles, name=match['team1'])
+                if r1: overwrites[r1] = discord.PermissionOverwrite(read_messages=True)
+            if match.get('team2'):
+                r2 = discord.utils.get(guild.roles, name=match['team2'])
+                if r2: overwrites[r2] = discord.PermissionOverwrite(read_messages=True)
+
+            target_channel = await guild.create_text_channel(chan_name, category=category, overwrites=overwrites)
+            created_count += 1
+        else:
+            linked_count += 1
+
+        # C. Save Channel ID to Bracket DB
+        match['channel_id'] = target_channel.id
+        
+        # Post Welcome Message if newly created
+        if not existing_channel:
+            await target_channel.send(f"⚔️ **Match #{match_id} Ready!**\n{match.get('team1', 'TBD')} vs {match.get('team2', 'TBD')}\n\nGLHF! Moderators will report the score here.")
+
+    save_brackets(brackets)
+    await ctx.send(f"✅ **Setup Complete!**\nCreated: {created_count} channels\nLinked: {linked_count} existing channels")
+
+@bot.command()
+async def exportbracket(ctx, game: str = None):
+    """(Moderator Only) Exports bracket data and visuals as a ZIP file."""
+    if "Moderator" not in [r.name for r in ctx.author.roles]:
+        await ctx.send("You need the **Moderator** role to use this command.", delete_after=5)
+        return
+
+    if not game:
+        await ctx.send("Usage: `!exportbracket <game>`", delete_after=5)
+        return
+
+    game_key = game.lower()
+    
+    # Create a buffer for the zip file
+    zip_buffer = io.BytesIO()
+    
+    files_found = False
+    
+    with zipfile.ZipFile(zip_buffer, "w") as zip_file:
+        # 1. Add brackets.json (The Data)
+        if os.path.exists(BRACKETS_FILE):
+            zip_file.write(BRACKETS_FILE, arcname="brackets.json")
+            files_found = True
+            
+        # 2. Add Visuals (HTML & PNG)
+        html_file = f"{game_key}_bracket.html"
+        png_file = f"{game_key}_bracket.png"
+        
+        if os.path.exists(html_file):
+            zip_file.write(html_file, arcname=html_file)
+        if os.path.exists(png_file):
+            zip_file.write(png_file, arcname=png_file)
+
+    if not files_found:
+        await ctx.send("❌ No bracket data found to export.", delete_after=5)
+        return
+
+    # Reset buffer position
+    zip_buffer.seek(0)
+    
+    await ctx.send(
+        f"📦 **Export Ready:** {game.upper()} Tournament Data",
+        file=discord.File(zip_buffer, filename=f"{game_key}_tournament_export.zip")
+    )
 
 @bot.command()
 async def scanclaims(ctx):
